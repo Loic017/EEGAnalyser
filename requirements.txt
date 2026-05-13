@@ -1,0 +1,7 @@
+mne>=1.6.0
+PyQt6>=6.6.0
+pyqtgraph>=0.13.3
+scipy>=1.11.0
+numpy>=1.26.0
+pandas>=2.1.0
+PyOpenGL>=3.1.7
