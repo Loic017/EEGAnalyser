@@ -12,6 +12,7 @@ class TimeSeriesPlot(QWidget):
         super().__init__(parent)
         self.setLayout(QVBoxLayout())
         self.layout().setContentsMargins(0, 0, 0, 0)
+        self.layout().setSpacing(0)
         
         self.data_model = None
         self.raw_data = None
@@ -35,15 +36,37 @@ class TimeSeriesPlot(QWidget):
         
         self.plot_item = self.graphics_layout.addPlot()
         self.plot_item.setLabel('bottom', 'Time', units='s')
-        self.plot_item.setLabel('left', 'Channels')
+        self.plot_item.setLabel('left', 'Chs')
         self.plot_item.showGrid(x=True, y=True)
         
         self.plot_item.setMouseEnabled(x=False, y=False)
         self.plot_item.setMenuEnabled(False)
         
         self.curves = []
-        
+        self.window_lines = []
         self.scrollbar = QScrollBar(Qt.Orientation.Horizontal)
+        self.scrollbar.setStyleSheet("""
+            QScrollBar:horizontal {
+                border: 1px solid #dcdcdc;
+                background: #f0f0f0;
+                height: 16px;
+                margin: 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #999999;
+                min-width: 40px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #777777;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+                background: none;
+            }
+        """)
         self.layout().addWidget(self.scrollbar)
         
         self.scrollbar.valueChanged.connect(self.on_scrollbar_changed)
@@ -62,11 +85,36 @@ class TimeSeriesPlot(QWidget):
         self.plot_item.setXRange(start, end, padding=0)
         self.current_x_range = (start, end)
         self._update_scrollbar()
+        self._update_window_lines()
 
     def unlock_view(self):
         self.locked_duration = None
         self.scroll_step = None
         self._update_scrollbar()
+        self._clear_window_lines()
+
+    def _update_window_lines(self):
+        if self.locked_duration is None or self.scroll_step is None:
+            self._clear_window_lines()
+            return
+
+        num_windows = int(round(self.locked_duration / self.scroll_step))
+        while len(self.window_lines) < num_windows + 1:
+            line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='r', style=Qt.PenStyle.DashLine, width=2))
+            self.plot_item.addItem(line)
+            self.window_lines.append(line)
+            
+        start = self.current_x_range[0]
+        for i, line in enumerate(self.window_lines):
+            if i <= num_windows:
+                line.setValue(start + i * self.scroll_step)
+                line.setVisible(True)
+            else:
+                line.setVisible(False)
+
+    def _clear_window_lines(self):
+        for line in self.window_lines:
+            line.setVisible(False)
 
     def wheelEvent(self, event):
         """Overrides mouse wheel to zoom with a fixed start point or scroll if locked."""
@@ -118,6 +166,8 @@ class TimeSeriesPlot(QWidget):
         self.current_x_range = x_range
         self.visible_duration = x_range[1] - x_range[0]
         self._update_scrollbar()
+        if self.locked_duration is not None:
+            self._update_window_lines()
 
     def _update_scrollbar(self):
         self._scrollbar_blocking = True
@@ -191,19 +241,30 @@ class TimeSeriesPlot(QWidget):
             self.update_visible_data()
 
     def refresh_plot_layout(self):
-        self.clear_curves()
-        if not self.visible_channels_indices or self.data_model is None:
+        if self.data_model is None:
+            self.clear_curves()
             return
 
-        yticks = []
         n_vis = len(self.visible_channels_indices)
+        
+        # Reuse existing curves to avoid heavy removeItem/addItem calls
+        while len(self.curves) > n_vis:
+            curve, _, _ = self.curves.pop()
+            self.plot_item.removeItem(curve)
+        
+        while len(self.curves) < n_vis:
+            curve = self.plot_item.plot(pen=pg.mkPen(color='k', width=1))
+            self.curves.append([curve, 0, 0])
+
+        yticks = []
         for i, ch_idx in enumerate(self.visible_channels_indices):
             y_offset = (n_vis - 1 - i) * self.offset_step
             ch_name = self.data_model.channel_names[ch_idx]
             yticks.append((y_offset, ch_name))
             
-            curve = self.plot_item.plot(pen=pg.mkPen(color='k', width=1))
-            self.curves.append((curve, y_offset, ch_idx))
+            # Update the stored offset and channel index
+            self.curves[i][1] = y_offset
+            self.curves[i][2] = ch_idx
 
         self.plot_item.getAxis('left').setTicks([yticks])
         
@@ -251,17 +312,28 @@ class TimeSeriesPlot(QWidget):
         for curve, y_offset, ch_idx in self.curves:
             channel_data = self.raw_data[ch_idx, mask]
             
-            if self.samples_per_pixel > 2:
-                n_chunks = int(n_points // self.samples_per_pixel)
+            if self.samples_per_pixel > 1:
+                # Peak (Min-Max) downsampling to preserve spikes and envelope
+                n_chunks = n_points // self.samples_per_pixel
                 if n_chunks > 0:
-                    trimmed_len = int(n_chunks * self.samples_per_pixel)
+                    trimmed_len = n_chunks * self.samples_per_pixel
                     reshaped = channel_data[:trimmed_len].reshape(n_chunks, self.samples_per_pixel)
-                    downsampled = np.mean(reshaped, axis=1)
-                    decimated_times = visible_times[:trimmed_len:self.samples_per_pixel]
-                    if len(decimated_times) == len(downsampled):
-                        curve.setData(decimated_times, downsampled + y_offset)
-                    else:
-                        curve.setData(visible_times, channel_data + y_offset)
+                    
+                    mins = np.min(reshaped, axis=1)
+                    maxs = np.max(reshaped, axis=1)
+                    
+                    # Interleave mins and maxs to create the envelope
+                    downsampled = np.empty(n_chunks * 2, dtype=channel_data.dtype)
+                    downsampled[0::2] = mins
+                    downsampled[1::2] = maxs
+                    
+                    decimated_times = np.empty(n_chunks * 2, dtype=visible_times.dtype)
+                    chunk_times = visible_times[:trimmed_len:self.samples_per_pixel]
+                    decimated_times[0::2] = chunk_times
+                    # Offset max times slightly within the chunk duration
+                    decimated_times[1::2] = chunk_times + (self.samples_per_pixel / self.data_model.sfreq) * 0.5
+                    
+                    curve.setData(decimated_times, downsampled + y_offset)
                 else:
                     curve.setData(visible_times, channel_data + y_offset)
             else:

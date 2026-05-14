@@ -164,11 +164,107 @@ class HoverableLinearRegionItem(pg.LinearRegionItem):
             if self.on_hover_change:
                 self.on_hover_change(False)
 
+class ViewAnnotationsDialog(QDialog):
+    def __init__(self, parent=None, manager=None):
+        super().__init__(parent)
+        self.setWindowTitle("View Annotations")
+        self.manager = manager
+        self.resize(500, 400)
+        
+        layout = QVBoxLayout(self)
+        
+        if not self.manager or not self.manager.annotations:
+            layout.addWidget(QLabel("No annotations available."))
+        else:
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll_content = QWidget()
+            self.scroll_layout = QVBoxLayout(scroll_content)
+            
+            self.refresh_list()
+            
+            scroll.setWidget(scroll_content)
+            layout.addWidget(scroll)
+            
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def refresh_list(self):
+        # Clear existing
+        while self.scroll_layout.count():
+            item = self.scroll_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+
+        for ann in self.manager.annotations:
+            row = QHBoxLayout()
+            rgn = ann['region_item'].getRegion()
+            text = f"<b>{ann['label']}</b><br/>{rgn[0]:.2f}s - {rgn[1]:.2f}s (Dur: {rgn[1]-rgn[0]:.2f}s)"
+            lbl = QLabel(text)
+            row.addWidget(lbl)
+            
+            btn_goto = QPushButton("Go To")
+            btn_goto.setFixedWidth(60)
+            btn_goto.clicked.connect(lambda checked, a=ann: self.goto_annotation(a))
+            row.addWidget(btn_goto)
+
+            btn_del = QPushButton("Delete")
+            btn_del.setFixedWidth(60)
+            btn_del.setStyleSheet("color: red;")
+            btn_del.clicked.connect(lambda checked, a=ann: self.delete_annotation(a))
+            row.addWidget(btn_del)
+            
+            self.scroll_layout.addLayout(row)
+        
+        self.scroll_layout.addStretch()
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+
+    def goto_annotation(self, ann):
+        if self.manager and self.manager.plot_widget:
+            rgn = ann['region_item'].getRegion()
+            # Center the view on the annotation
+            duration = rgn[1] - rgn[0]
+            # If duration is very small, show a bit more padding
+            view_width = max(duration * 2, 5.0) 
+            center = (rgn[0] + rgn[1]) / 2
+            start = max(0, center - view_width / 2)
+            end = start + view_width
+            self.manager.plot_widget.plot_item.setXRange(start, end, padding=0)
+
+    def delete_annotation(self, ann):
+        reply = QMessageBox.question(self, "Confirm Delete", 
+                                   f"Remove annotation '{ann['label']}'?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.manager.remove_annotation(ann)
+            if not self.manager.annotations:
+                self.accept()
+            else:
+                self.refresh_list()
+
 class AnnotationManager:
     def __init__(self, plot_widget: 'TimeSeriesPlot', parent_window=None):
         self.plot_widget = plot_widget
         self.parent_window = parent_window
         self.annotations: List[Dict] = []
+
+    def view_annotations(self):
+        if not self.annotations:
+            QMessageBox.information(self.parent_window, "Annotations", "No annotations found.")
+            return
+        
+        dialog = ViewAnnotationsDialog(self.parent_window, manager=self)
+        dialog.exec()
 
     def clear_annotations(self):
         for ann in list(self.annotations):
@@ -268,6 +364,40 @@ class AnnotationManager:
             'region_item': region,
             'text_item': text_item
         })
+
+    def load_labels_from_json(self, filepath: str):
+        """Loads annotations from a JSON file."""
+        import json
+        try:
+            with open(filepath, 'r') as f:
+                data = json.load(f)
+            
+            # Support both a single object and a list of objects
+            if isinstance(data, dict):
+                items = [data]
+            elif isinstance(data, list):
+                items = data
+            else:
+                print(f"AnnotationManager: Invalid JSON format in {filepath}")
+                return
+
+            count = 0
+            for item in items:
+                label = item.get('label', 'Unknown')
+                # Convert milliseconds to seconds
+                start_ms = item.get('start', 0)
+                end_ms = item.get('end', 0)
+                
+                start_s = start_ms / 1000.0
+                end_s = end_ms / 1000.0
+                
+                if end_s > start_s:
+                    self._create_annotation(label, start_s, end_s)
+                    count += 1
+            
+            print(f"AnnotationManager: Loaded {count} annotations from {filepath}")
+        except Exception as e:
+            print(f"AnnotationManager ERROR: Failed to load labels from {filepath}: {e}")
 
     def export_annotations(self, parent_window):
         if not self.annotations:

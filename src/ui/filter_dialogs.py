@@ -1,9 +1,72 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox, 
     QDialogButtonBox, QFormLayout, QListWidget, QListWidgetItem, 
-    QPushButton
+    QPushButton, QComboBox, QCheckBox
 )
 from PyQt6.QtCore import Qt
+
+class ResolutionSettingsDialog(QDialog):
+    def __init__(self, parent=None, is_auto=True, current_factor=1):
+        super().__init__(parent)
+        self.setWindowTitle("Resolution Settings")
+        layout = QVBoxLayout(self)
+        
+        self.chk_auto = QCheckBox("Auto Resolution (Adjust for window size)")
+        self.chk_auto.setChecked(is_auto)
+        
+        form = QFormLayout()
+        self.combo_factor = QComboBox()
+        self.factors_map = {
+            "1x (Max Detail)": 1,
+            "2x": 2,
+            "4x": 4,
+            "8x": 8,
+            "16x": 16,
+            "32x": 32,
+            "64x": 64,
+            "128x": 128,
+            "256x": 256,
+            "512x (Low Detail)": 512
+        }
+        for k in self.factors_map.keys():
+            self.combo_factor.addItem(k)
+        
+        # Find nearest factor to current_factor
+        current_idx = 0
+        best_diff = float('inf')
+        for idx, (k, v) in enumerate(self.factors_map.items()):
+            diff = abs(v - current_factor)
+            if diff < best_diff:
+                best_diff = diff
+                current_idx = idx
+        
+        self.combo_factor.setCurrentIndex(current_idx)
+        self.combo_factor.setEnabled(not is_auto)
+        self.chk_auto.stateChanged.connect(self.on_auto_changed)
+        
+        form.addRow("Manual Decimation:", self.combo_factor)
+        
+        layout.addWidget(self.chk_auto)
+        layout.addLayout(form)
+        
+        lbl_hint = QLabel("<i>Note: High decimation factors speed up rendering for long files.</i>")
+        lbl_hint.setWordWrap(True)
+        layout.addWidget(lbl_hint)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def on_auto_changed(self, state):
+        self.combo_factor.setEnabled(state != Qt.CheckState.Checked.value)
+
+    def get_values(self):
+        selected_text = self.combo_factor.currentText()
+        return {
+            "is_auto": self.chk_auto.isChecked(),
+            "factor": self.factors_map[selected_text]
+        }
 
 class NotchFilterDialog(QDialog):
     def __init__(self, parent=None):
