@@ -8,6 +8,79 @@ import pandas as pd
 import hashlib
 from typing import List, Dict
 
+EXP_DIALOG_STYLE = """
+    QDialog {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+    }
+    QLabel {
+        color: #00ffff;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    QLineEdit, QDoubleSpinBox {
+        background-color: #0a0a1a;
+        color: #ffff00;
+        border: 2px solid #ff00ff;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    QLineEdit:focus, QDoubleSpinBox:focus {
+        border: 2px solid #00ffff;
+    }
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+        color: #000000;
+        border: 2px solid #ffff00;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: bold;
+        font-family: monospace;
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:1 #ff00ff);
+    }
+    QPushButton:pressed {
+        background: #00ff00;
+    }
+    QScrollBar:vertical {
+        border: 2px solid #ff00ff;
+        background: #0a0a1a;
+        width: 12px;
+        margin: 0px;
+        border-radius: 6px;
+    }
+    QScrollBar::handle:vertical {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+        min-height: 20px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QMessageBox {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+    }
+    QMessageBox QLabel {
+        color: #00ffff;
+    }
+    QMessageBox QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+        color: #000000;
+        border: 2px solid #ffff00;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: bold;
+        font-family: monospace;
+    }
+"""
+
+def _is_experimental(parent):
+    if parent and hasattr(parent, 'experimental_appearance'):
+        return parent.experimental_appearance
+    if parent and hasattr(parent, 'parent_window') and parent.parent_window and hasattr(parent.parent_window, 'experimental_appearance'):
+        return parent.parent_window.experimental_appearance
+    return False
+
 class AnnotationDialog(QDialog):
     def __init__(self, parent=None, max_time=1000.0, manager=None):
         super().__init__(parent)
@@ -19,14 +92,14 @@ class AnnotationDialog(QDialog):
         
         # --- List of Existing Annotations ---
         if self.manager and self.manager.annotations:
-            layout.addWidget(QLabel("<b>Current Annotations:</b>"))
+            lbl = QLabel("<b>Current Annotations:</b>")
+            layout.addWidget(lbl)
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setMaximumHeight(200)
             scroll_content = QWidget()
             scroll_layout = QVBoxLayout(scroll_content)
             
-            # Create a copy of the list to iterate safely
             for ann in list(self.manager.annotations):
                 row = QHBoxLayout()
                 rgn = ann['region_item'].getRegion()
@@ -35,8 +108,21 @@ class AnnotationDialog(QDialog):
                 
                 btn_del = QPushButton("X")
                 btn_del.setFixedWidth(30)
-                btn_del.setStyleSheet("color: red; font-weight: bold;")
-                # Use a closure to capture the specific annotation dictionary
+                if _is_experimental(parent):
+                    btn_del.setStyleSheet("""
+                        QPushButton {
+                            background: #ff0000;
+                            color: #ffffff;
+                            border: 2px solid #ffff00;
+                            border-radius: 6px;
+                            font-weight: bold;
+                        }
+                        QPushButton:hover {
+                            background: #ff6666;
+                        }
+                    """)
+                else:
+                    btn_del.setStyleSheet("color: red; font-weight: bold;")
                 btn_del.clicked.connect(lambda checked, a=ann: self.delete_clicked(a))
                 row.addWidget(btn_del)
                 scroll_layout.addLayout(row)
@@ -47,7 +133,7 @@ class AnnotationDialog(QDialog):
             
             line = QWidget()
             line.setFixedHeight(2)
-            line.setStyleSheet("background-color: #ddd;")
+            line.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);" if _is_experimental(parent) else "background-color: #ddd;")
             layout.addWidget(line)
 
         # --- Add New Annotation ---
@@ -71,7 +157,6 @@ class AnnotationDialog(QDialog):
         self.end_spin.setSuffix(" s")
         self.end_spin.setValue(min(max_time, 10.0))
         
-        # Connect sync logic
         self.start_spin.valueChanged.connect(self._sync_end_from_start_duration)
         self.duration_spin.valueChanged.connect(self._sync_end_from_start_duration)
         self.end_spin.valueChanged.connect(self._sync_duration_from_start_end)
@@ -87,6 +172,9 @@ class AnnotationDialog(QDialog):
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        if _is_experimental(parent):
+            self.setStyleSheet(EXP_DIALOG_STYLE)
 
     def _sync_end_from_start_duration(self):
         if self.end_spin.signalsBlocked():
@@ -190,14 +278,46 @@ class ViewAnnotationsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        if _is_experimental(parent):
+            self.setStyleSheet(EXP_DIALOG_STYLE)
+
     def refresh_list(self):
-        # Clear existing
         while self.scroll_layout.count():
             item = self.scroll_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
             elif item.layout():
                 self._clear_layout(item.layout())
+
+        exp = _is_experimental(self.parent())
+        btn_style_exp = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+                color: #000000;
+                border: 2px solid #ffff00;
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-weight: bold;
+                font-family: monospace;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:1 #ff00ff);
+            }
+        """
+        btn_del_exp = """
+            QPushButton {
+                background: #ff0000;
+                color: #ffffff;
+                border: 2px solid #ffff00;
+                border-radius: 6px;
+                padding: 4px 8px;
+                font-weight: bold;
+                font-family: monospace;
+            }
+            QPushButton:hover {
+                background: #ff6666;
+            }
+        """
 
         for ann in self.manager.annotations:
             row = QHBoxLayout()
@@ -208,12 +328,17 @@ class ViewAnnotationsDialog(QDialog):
             
             btn_goto = QPushButton("Go To")
             btn_goto.setFixedWidth(60)
+            if exp:
+                btn_goto.setStyleSheet(btn_style_exp)
             btn_goto.clicked.connect(lambda checked, a=ann: self.goto_annotation(a))
             row.addWidget(btn_goto)
 
             btn_del = QPushButton("Delete")
             btn_del.setFixedWidth(60)
-            btn_del.setStyleSheet("color: red;")
+            if exp:
+                btn_del.setStyleSheet(btn_del_exp)
+            else:
+                btn_del.setStyleSheet("color: red;")
             btn_del.clicked.connect(lambda checked, a=ann: self.delete_annotation(a))
             row.addWidget(btn_del)
             
@@ -306,18 +431,40 @@ class AnnotationManager:
 
     def _get_color_for_label(self, label):
         """Returns a (R, G, B) tuple for the given label."""
+        exp = _is_experimental(self.parent_window)
+        
+        if exp:
+            neon_mapping = {
+                "1": (255, 0, 255),      # Magenta
+                "2": (0, 255, 255),      # Cyan
+                "3": (255, 255, 0),      # Yellow
+                "4": (0, 255, 0),        # Neon Green
+            }
+            
+            label_str = str(label).strip()
+            if label_str in neon_mapping:
+                return neon_mapping[label_str]
+            
+            hash_val = int(hashlib.md5(label_str.encode()).hexdigest(), 16)
+            r = (hash_val & 0xFF0000) >> 16
+            g = (hash_val & 0x00FF00) >> 8
+            b = (hash_val & 0x0000FF)
+            r = max(r, 128)
+            g = max(g, 128)
+            b = max(b, 128)
+            return (r, g, b)
+        
         mapping = {
-            "1": (0, 0, 255),      # Blue
-            "2": (255, 0, 0),      # Red
-            "3": (0, 255, 0),      # Green
-            "4": (255, 165, 0),    # Orange
+            "1": (0, 0, 255),
+            "2": (255, 0, 0),
+            "3": (0, 255, 0),
+            "4": (255, 165, 0),
         }
         
         label_str = str(label).strip()
         if label_str in mapping:
             return mapping[label_str]
         
-        # Consistent random color based on hash
         hash_val = int(hashlib.md5(label_str.encode()).hexdigest(), 16)
         r = (hash_val & 0xFF0000) >> 16
         g = (hash_val & 0x00FF00) >> 8

@@ -5,6 +5,160 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+EXPERIMENTAL_DIALOG_STYLE = """
+    QDialog {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+    }
+    QLabel {
+        color: #00ffff;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    QDoubleSpinBox, QSpinBox, QComboBox {
+        background-color: #0a0a1a;
+        color: #ffff00;
+        border: 2px solid #ff00ff;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {
+        border: 2px solid #00ffff;
+    }
+    QCheckBox {
+        color: #00ffff;
+        font-family: monospace;
+        font-weight: bold;
+        spacing: 8px;
+    }
+    QCheckBox::indicator {
+        width: 20px;
+        height: 20px;
+        border-radius: 10px;
+        border: 2px solid #ff00ff;
+        background-color: #0a0a1a;
+    }
+    QCheckBox::indicator:checked {
+        background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+        border: 2px solid #ffff00;
+    }
+    QPushButton {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+        color: #000000;
+        border: 2px solid #ffff00;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-weight: bold;
+        font-family: monospace;
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:1 #ff00ff);
+    }
+    QPushButton:pressed {
+        background: #00ff00;
+    }
+    QListWidget {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(10,10,26,0.9), stop:1 rgba(26,0,51,0.9));
+        color: #00ffff;
+        border: 2px solid #ff00ff;
+        border-radius: 8px;
+        font-family: monospace;
+        font-weight: bold;
+    }
+    QListWidget::item {
+        padding: 10px;
+        border-bottom: 2px solid rgba(255,0,255,0.3);
+        color: #00ffff;
+    }
+    QListWidget::item:hover {
+        background: rgba(255,0,255,0.3);
+        color: #ffff00;
+    }
+    QListWidget::item:selected {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+        color: #000000;
+    }
+    QScrollBar:vertical {
+        border: 2px solid #ff00ff;
+        background: #0a0a1a;
+        width: 12px;
+        margin: 0px;
+        border-radius: 6px;
+    }
+    QScrollBar::handle:vertical {
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+        min-height: 20px;
+        border-radius: 6px;
+        margin: 2px;
+    }
+    QDialogButtonBox {
+        dialogbuttonbox-buttons-have-icons: false;
+    }
+"""
+
+DEFAULT_DIALOG_STYLE = """
+    QDialog {
+        background-color: #ffffff;
+    }
+    QLabel {
+        color: #333333;
+    }
+    QDoubleSpinBox, QSpinBox, QComboBox {
+        background-color: #ffffff;
+        color: #333333;
+        border: 1px solid #cccccc;
+        border-radius: 4px;
+        padding: 4px 8px;
+    }
+    QCheckBox {
+        color: #333333;
+        spacing: 6px;
+    }
+    QPushButton {
+        background-color: #f0f0f0;
+        color: #333333;
+        border: 1px solid #cccccc;
+        border-radius: 4px;
+        padding: 6px 12px;
+    }
+    QPushButton:hover {
+        background-color: #e0e0e0;
+    }
+    QListWidget {
+        background-color: #ffffff;
+        color: #333333;
+        border: 1px solid #cccccc;
+        border-radius: 4px;
+    }
+    QListWidget::item {
+        padding: 6px;
+        border-bottom: 1px solid #eeeeee;
+    }
+    QListWidget::item:hover {
+        background-color: #f5f5f5;
+    }
+    QListWidget::item:selected {
+        background-color: #0078d4;
+        color: #ffffff;
+    }
+    QScrollBar:vertical {
+        border: none;
+        background: #f0f0f0;
+        width: 10px;
+        margin: 0px;
+    }
+    QScrollBar::handle:vertical {
+        background: #cccccc;
+        min-height: 20px;
+        border-radius: 5px;
+        margin: 2px;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #aaaaaa;
+    }
+"""
+
 class ResolutionSettingsDialog(QDialog):
     def __init__(self, parent=None, is_auto=True, current_factor=1):
         super().__init__(parent)
@@ -31,7 +185,6 @@ class ResolutionSettingsDialog(QDialog):
         for k in self.factors_map.keys():
             self.combo_factor.addItem(k)
         
-        # Find nearest factor to current_factor
         current_idx = 0
         best_diff = float('inf')
         for idx, (k, v) in enumerate(self.factors_map.items()):
@@ -57,6 +210,14 @@ class ResolutionSettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
 
     def on_auto_changed(self, state):
         self.combo_factor.setEnabled(state != Qt.CheckState.Checked.value)
@@ -88,6 +249,14 @@ class NotchFilterDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
+
     def get_values(self):
         return {"freqs": self.spin_freq.value()}
 
@@ -117,6 +286,14 @@ class BandpassFilterDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
+
     def get_values(self):
         return {"l_freq": self.spin_low.value(), "h_freq": self.spin_high.value()}
 
@@ -140,6 +317,14 @@ class LowpassFilterDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
+
     def get_values(self):
         return {"h_freq": self.spin_high.value()}
 
@@ -162,6 +347,14 @@ class HighpassFilterDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
 
     def get_values(self):
         return {"l_freq": self.spin_low.value()}
@@ -203,15 +396,18 @@ class ViewFiltersDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        self._apply_style(parent)
+
+    def _apply_style(self, parent):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet(EXPERIMENTAL_DIALOG_STYLE)
+        else:
+            self.setStyleSheet(DEFAULT_DIALOG_STYLE)
+
     def remove_selected(self):
         current_item = self.list_widget.currentItem()
         if current_item:
             index = current_item.data(Qt.ItemDataRole.UserRole)
             self.removed_indices.append(index)
-            # Remove from list widget immediately
             self.list_widget.takeItem(self.list_widget.row(current_item))
-            # Since we can remove multiple, we need to be careful with indices.
-            # Actually, better to just remove one and close or handle it properly.
-            # If we remove multiple, the indices in self.applied_filters shift.
-            # A simpler way is to signal the parent to remove and then refresh.
-            self.accept() # Close and signal removal
+            self.accept()

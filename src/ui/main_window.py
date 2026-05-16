@@ -3,7 +3,7 @@ import json
 from PyQt6.QtWidgets import (
     QMainWindow, QSplitter, QDockWidget, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QMessageBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QFormLayout,
-    QMenuBar, QMenu, QToolBar, QListWidget, QListWidgetItem, QDialog, QDialogButtonBox
+    QMenuBar, QMenu, QToolBar, QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QLineEdit
 )
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import Qt, QTimer
@@ -19,15 +19,32 @@ from .filter_dialogs import (
 )
 
 class FeatureSettingsDialog(QDialog):
-    def __init__(self, parent=None, channels=[]):
+    def __init__(self, parent=None, channels=[], sfreq=None, duration=None, n_channels=None):
         super().__init__(parent)
         self.setWindowTitle("Feature Extract Settings")
+        self.setMinimumWidth(480)
         layout = QVBoxLayout(self)
+
+        if sfreq:
+            nyquist = sfreq / 2
+            rec_nperseg = int(sfreq * 2)
+            rec_noverlap = rec_nperseg // 2
+            rec_window = min(max(1, int(duration / 16) * 2), 10) if duration else 2
+        else:
+            nyquist = rec_nperseg = rec_noverlap = rec_window = None
+
+        info_text = f"Signal: {n_channels or '?'} ch  |  {sfreq or '?'} Hz  |  {duration or '?'} s"
+        if nyquist:
+            info_text += f"  |  Nyquist: {nyquist:.0f} Hz"
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("font-size: 11px; color: #666; padding: 4px 0;")
+        layout.addWidget(info_label)
+
         form = QFormLayout()
-        
+
         self.cmb_mode = QComboBox()
         self.cmb_mode.addItems(["PSD", "Spectrogram", "Topomap"])
-        
+
         self.cmb_band = QComboBox()
         self.cmb_band.addItems(["Delta (1-4 Hz)", "Theta (4-8 Hz)", "Alpha (8-12 Hz)", "Beta (12-30 Hz)", "Gamma (30-45 Hz)"])
         self.cmb_band.setEnabled(False)
@@ -36,7 +53,9 @@ class FeatureSettingsDialog(QDialog):
         self.spin_window = QSpinBox()
         self.spin_window.setRange(1, 60)
         self.spin_window.setSuffix(" s")
-        
+        if rec_window:
+            self.spin_window.setToolTip(f"Recommended: {rec_window} s")
+
         self.list_target_ch = QListWidget()
         for ch in channels:
             item = QListWidgetItem(ch)
@@ -48,31 +67,141 @@ class FeatureSettingsDialog(QDialog):
         self.spin_nperseg = QSpinBox()
         self.spin_nperseg.setRange(0, 10000)
         self.spin_nperseg.setSpecialValueText("Auto")
-        self.spin_nperseg.setToolTip("Segment length (nperseg). 0 for Auto.")
+        if rec_nperseg:
+            self.spin_nperseg.setToolTip(f"Segment length in samples. Recommended: {rec_nperseg} ({rec_nperseg/sfreq:.1f}s @ {sfreq} Hz). Auto = {rec_nperseg}.")
+        else:
+            self.spin_nperseg.setToolTip("Segment length (nperseg). 0 for Auto.")
 
         self.spin_noverlap = QSpinBox()
         self.spin_noverlap.setRange(0, 10000)
         self.spin_noverlap.setSpecialValueText("Auto")
-        self.spin_noverlap.setToolTip("Overlap length (noverlap). 0 for Auto.")
-        
+        if rec_noverlap:
+            self.spin_noverlap.setToolTip(f"Overlap length in samples. Recommended: {rec_noverlap} (50% of nperseg). Auto = {rec_noverlap}.")
+        else:
+            self.spin_noverlap.setToolTip("Overlap length (noverlap). 0 for Auto.")
+
+        self.cmb_window = QComboBox()
+        self.cmb_window.addItems(["hann", "hamming", "boxcar", "blackman", "bartlett"])
+        self.cmb_window.setToolTip("Window function for FFT. 'hann' is recommended for most EEG analysis.")
+
+        self.cmb_scaling = QComboBox()
+        self.cmb_scaling.addItems(["density", "spectrum"])
+        self.cmb_scaling.setToolTip("'density' gives power spectral density (µV²/Hz). 'spectrum' gives power spectrum (µV²). Recommended: density.")
+
+        self.cmb_interp = QComboBox()
+        self.cmb_interp.addItems(["cubic", "linear", "nearest"])
+        self.cmb_interp.setEnabled(False)
+        self.cmb_mode.currentTextChanged.connect(lambda t: self.cmb_interp.setEnabled(t == "Topomap"))
+
         form.addRow("Extraction Mode:", self.cmb_mode)
         form.addRow("Topomap Band:", self.cmb_band)
+        form.addRow("Topomap Interp:", self.cmb_interp)
         form.addRow("Analysis Window:", self.spin_window)
         form.addRow("Target Channels:", self.list_target_ch)
         form.addRow("Nperseg (Samples):", self.spin_nperseg)
         form.addRow("Noverlap (Samples):", self.spin_noverlap)
-        
+        form.addRow("Window Function:", self.cmb_window)
+        form.addRow("Scaling:", self.cmb_scaling)
+
         layout.addLayout(form)
-        
+
+        if rec_nperseg:
+            hint = QLabel(f"💡 When set to Auto, nperseg={rec_nperseg} ({rec_nperseg/sfreq:.1f}s) and noverlap={rec_noverlap} ({rec_noverlap/sfreq:.1f}s) at {sfreq} Hz")
+            hint.setStyleSheet("font-size: 10px; color: #999; padding: 2px 0;")
+            layout.addWidget(hint)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def set_values(self, mode, window, target_ch, nperseg, noverlap, band="Alpha (8-12 Hz)"):
+        if parent and hasattr(parent, 'experimental_appearance') and parent.experimental_appearance:
+            self.setStyleSheet("""
+                QDialog {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+                }
+                QLabel {
+                    color: #00ffff;
+                    font-family: monospace;
+                    font-weight: bold;
+                }
+                QSpinBox, QComboBox {
+                    background-color: #0a0a1a;
+                    color: #ffff00;
+                    border: 2px solid #ff00ff;
+                    border-radius: 8px;
+                    padding: 6px 10px;
+                    font-family: monospace;
+                    font-weight: bold;
+                }
+                QSpinBox:focus, QComboBox:focus {
+                    border: 2px solid #00ffff;
+                }
+                QListWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(10,10,26,0.9), stop:1 rgba(26,0,51,0.9));
+                    color: #00ffff;
+                    border: 2px solid #ff00ff;
+                    border-radius: 8px;
+                    font-family: monospace;
+                    font-weight: bold;
+                }
+                QListWidget::item {
+                    padding: 8px;
+                    border-bottom: 2px solid rgba(255,0,255,0.3);
+                    color: #00ffff;
+                }
+                QListWidget::item:hover {
+                    background: rgba(255,0,255,0.3);
+                    color: #ffff00;
+                }
+                QListWidget::item:selected {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                    color: #000000;
+                }
+                QListWidget::indicator {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 10px;
+                    border: 2px solid #ff00ff;
+                    background-color: #0a0a1a;
+                }
+                QListWidget::indicator:checked {
+                    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+                    border: 2px solid #ffff00;
+                }
+                QPushButton {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+                    color: #000000;
+                    border: 2px solid #ffff00;
+                    border-radius: 8px;
+                    padding: 8px 16px;
+                    font-weight: bold;
+                    font-family: monospace;
+                }
+                QPushButton:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:1 #ff00ff);
+                }
+                QScrollBar:vertical {
+                    border: 2px solid #ff00ff;
+                    background: #0a0a1a;
+                    width: 12px;
+                    margin: 0px;
+                    border-radius: 6px;
+                }
+                QScrollBar::handle:vertical {
+                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+                    min-height: 20px;
+                    border-radius: 6px;
+                    margin: 2px;
+                }
+            """)
+
+    def set_values(self, mode, window, target_ch, nperseg, noverlap, band="Alpha (8-12 Hz)", window_func="hann", scaling="density", interp="cubic"):
         self.cmb_mode.setCurrentText(mode.capitalize() if mode != "psd" else "PSD")
         self.cmb_band.setCurrentText(band)
         self.cmb_band.setEnabled(self.cmb_mode.currentText() == "Topomap")
+        self.cmb_interp.setCurrentText(interp)
+        self.cmb_interp.setEnabled(self.cmb_mode.currentText() == "Topomap")
         self.spin_window.setValue(window)
         
         target_list = target_ch if isinstance(target_ch, list) else ([target_ch] if target_ch else [])
@@ -85,6 +214,8 @@ class FeatureSettingsDialog(QDialog):
                 
         self.spin_nperseg.setValue(nperseg)
         self.spin_noverlap.setValue(noverlap)
+        self.cmb_window.setCurrentText(window_func)
+        self.cmb_scaling.setCurrentText(scaling)
 
     def get_values(self):
         checked_channels = []
@@ -96,10 +227,13 @@ class FeatureSettingsDialog(QDialog):
         return {
             "mode": self.cmb_mode.currentText().lower(),
             "band": self.cmb_band.currentText(),
+            "interp": self.cmb_interp.currentText(),
             "window": self.spin_window.value(),
             "target_ch": checked_channels,
             "nperseg": self.spin_nperseg.value(),
-            "noverlap": self.spin_noverlap.value()
+            "noverlap": self.spin_noverlap.value(),
+            "window_func": self.cmb_window.currentText(),
+            "scaling": self.cmb_scaling.currentText()
         }
 
 class MainWindow(QMainWindow):
@@ -117,8 +251,12 @@ class MainWindow(QMainWindow):
         self.extract_target_ch = []
         self.extract_nperseg = 0
         self.extract_noverlap = 0
+        self.extract_window_func = "hann"
+        self.extract_scaling = "density"
+        self.extract_interp = "cubic"
         self.allow_overlap = False
         self.auto_load_labels = True
+        self.experimental_appearance = False
         self.current_folder = ""
         self.recent_files = []
         self.recent_folders = []
@@ -140,11 +278,13 @@ class MainWindow(QMainWindow):
         self.time_series_plot = TimeSeriesPlot()
         self.main_splitter.addWidget(self.time_series_plot)
 
+        # Connect load buttons in the time series plot placeholder
+        self.time_series_plot.load_file_clicked.connect(self.load_file_dialog)
+        self.time_series_plot.load_folder_clicked.connect(self.open_folder_dialog)
+        self.time_series_plot.load_dummy_clicked.connect(self.load_dummy_data)
+
         # Set initial sizes
         self.main_splitter.setSizes([0, 800])
-
-        # Channel Selection Dock
-        self.setup_channel_dock()
 
         # Small Expand Button (appears when dock is hidden)
         self.btn_expand_sidebar = QPushButton("▶", self)
@@ -162,15 +302,16 @@ class MainWindow(QMainWindow):
                 font-weight: bold;
             }
             QPushButton:hover {
-                color: #555; /* No color change on hover as requested */
+                color: #555;
                 background-color: rgba(220, 220, 220, 0.7);
             }
         """)
         self.btn_expand_sidebar.setVisible(False)
         self.btn_expand_sidebar.clicked.connect(lambda: self.channel_dock.show())
-        
-        # Position it on the left edge, vertically centered relative to the central widget area
-        self.btn_expand_sidebar.move(0, 300) 
+        self.btn_expand_sidebar.move(0, 300)
+
+        # Channel Selection Dock
+        self.setup_channel_dock() 
 
         # Annotation Manager
         self.annotation_manager = AnnotationManager(self.time_series_plot, parent_window=self)
@@ -178,6 +319,7 @@ class MainWindow(QMainWindow):
         # UI Components
         self.setup_menu_bar()
         self.setup_tool_bar()
+        self.update_recent_menus()
         
         self.spectral_timer = QTimer()
         self.spectral_timer.setSingleShot(True)
@@ -201,6 +343,23 @@ class MainWindow(QMainWindow):
                     data = json.load(f)
                     self.recent_files = data.get("files", [])
                     self.recent_folders = data.get("folders", [])
+                    
+                    # Load feature settings
+                    self.extract_mode = data.get("extract_mode", "psd")
+                    self.extract_band = data.get("extract_band", "Alpha (8-12 Hz)")
+                    self.extract_window = data.get("extract_window", 2)
+                    self.extract_target_ch = data.get("extract_target_ch", [])
+                    self.extract_nperseg = data.get("extract_nperseg", 0)
+                    self.extract_noverlap = data.get("extract_noverlap", 0)
+                    self.extract_window_func = data.get("extract_window_func", "hann")
+                    self.extract_scaling = data.get("extract_scaling", "density")
+                    self.extract_interp = data.get("extract_interp", "cubic")
+                    
+                    self.allow_overlap = data.get("allow_overlap", False)
+                    self.auto_load_labels = data.get("auto_load_labels", True)
+                    self.experimental_appearance = data.get("experimental_appearance", False)
+                    
+                    self.extract_panel.set_mode(self.extract_mode)
         except:
             pass
 
@@ -208,9 +367,28 @@ class MainWindow(QMainWindow):
         try:
             path = os.path.expanduser("~/.eeganalyser_recents.json")
             with open(path, 'w') as f:
-                json.dump({"files": self.recent_files, "folders": self.recent_folders}, f)
+                json.dump({
+                    "files": self.recent_files, 
+                    "folders": self.recent_folders,
+                    "extract_mode": self.extract_mode,
+                    "extract_band": self.extract_band,
+                    "extract_window": self.extract_window,
+                    "extract_target_ch": self.extract_target_ch,
+                    "extract_nperseg": self.extract_nperseg,
+                    "extract_noverlap": self.extract_noverlap,
+                    "extract_window_func": self.extract_window_func,
+                    "extract_scaling": self.extract_scaling,
+                    "extract_interp": self.extract_interp,
+                    "allow_overlap": self.allow_overlap,
+                    "auto_load_labels": self.auto_load_labels,
+                    "experimental_appearance": self.experimental_appearance
+                }, f)
         except:
             pass
+
+    def closeEvent(self, event):
+        self.save_recents()
+        super().closeEvent(event)
 
     def update_recents(self, file_path=None, folder_path=None):
         if file_path:
@@ -241,56 +419,151 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda ch, path=d: self.open_folder(path))
             self.recent_folders_menu.addAction(action)
 
+        self.time_series_plot.recent_files_menu.clear()
+        for f in self.recent_files:
+            action = QAction(os.path.basename(f), self)
+            action.setData(f)
+            action.triggered.connect(lambda ch, path=f: self.load_edf(path))
+            self.time_series_plot.recent_files_menu.addAction(action)
+        self.time_series_plot.btn_recent_files.setVisible(len(self.recent_files) > 0)
+
+        self.time_series_plot.recent_folders_menu.clear()
+        for d in self.recent_folders:
+            action = QAction(d, self)
+            action.setData(d)
+            action.triggered.connect(lambda ch, path=d: self.open_folder(path))
+            self.time_series_plot.recent_folders_menu.addAction(action)
+        self.time_series_plot.btn_recent_folders.setVisible(len(self.recent_folders) > 0)
+
     def setup_channel_dock(self):
         self.channel_dock = QDockWidget(self)
         self.channel_dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
         self.channel_dock.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
-        # Make it thinner and fixed-ish
-        self.channel_dock.setMinimumWidth(80)
-        self.channel_dock.setMaximumWidth(140)
+        self.channel_dock.setMinimumWidth(100)
+        self.channel_dock.setMaximumWidth(160)
 
         # Custom Title Bar
         title_bar = QWidget()
-        title_bar.setStyleSheet("background-color: #333333; border-bottom: 1px solid #444444;")
+        title_bar.setObjectName("channelDockTitle")
         title_layout = QHBoxLayout(title_bar)
-        title_layout.setContentsMargins(6, 2, 2, 2)
-        title_layout.setSpacing(0)
+        title_layout.setContentsMargins(8, 4, 4, 4)
+        title_layout.setSpacing(4)
 
-        lbl_title = QLabel("Chs")
-        lbl_title.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
+        lbl_title = QLabel("Channels")
+        lbl_title.setObjectName("channelDockTitleLabel")
         title_layout.addWidget(lbl_title)
         title_layout.addStretch()
 
-        btn_collapse = QPushButton("◀") # Left arrow to signify collapse
-        btn_collapse.setFixedSize(20, 20)
+        btn_collapse = QPushButton("◀")
+        btn_collapse.setFixedSize(22, 22)
         btn_collapse.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_collapse.setToolTip("Collapse Sidebar")
-        btn_collapse.setStyleSheet("""
-            QPushButton { 
-                border: none; 
-                background: transparent; 
-                font-size: 12px; 
-                color: #ffffff; 
-                margin: 0; 
-                padding: 0;
-            } 
-            QPushButton:hover { 
-                color: #cccccc;
-            }
-        """)
+        btn_collapse.setObjectName("channelDockCollapseBtn")
         btn_collapse.clicked.connect(lambda: self.channel_dock.hide())
         title_layout.addWidget(btn_collapse)
 
         self.channel_dock.setTitleBarWidget(title_bar)
 
         dock_container = QWidget()
-        dock_container.setStyleSheet("background-color: #333333;")
+        dock_container.setObjectName("channelDockContainer")
         main_dock_layout = QVBoxLayout(dock_container)
-        main_dock_layout.setContentsMargins(2, 2, 2, 2)
-        main_dock_layout.setSpacing(2)
+        main_dock_layout.setContentsMargins(4, 4, 4, 4)
+        main_dock_layout.setSpacing(4)
+
+        # Search box
+        self.channel_search = QLineEdit()
+        self.channel_search.setObjectName("channelSearch")
+        self.channel_search.setPlaceholderText("Search channels...")
+        self.channel_search.textChanged.connect(self.filter_channel_list)
+        main_dock_layout.addWidget(self.channel_search)
 
         self.channel_list = QListWidget()
-        # Modern, dark styling for the channel sidebar
+        self.channel_list.setObjectName("channelList")
+        self.channel_list.setSpacing(2)
+        self.channel_list.itemChanged.connect(self.on_channel_selection_changed)
+        main_dock_layout.addWidget(self.channel_list)
+
+        btn_container = QWidget()
+        btn_container.setObjectName("channelBtnContainer")
+        btn_layout = QHBoxLayout(btn_container)
+        btn_layout.setContentsMargins(0, 2, 0, 2)
+        btn_layout.setSpacing(4)
+
+        btn_all = QPushButton("All")
+        btn_all.setObjectName("channelBtnAll")
+        btn_all.clicked.connect(self.select_all_channels)
+
+        btn_none = QPushButton("None")
+        btn_none.setObjectName("channelBtnNone")
+        btn_none.clicked.connect(self.clear_all_channels)
+
+        btn_layout.addWidget(btn_all)
+        btn_layout.addWidget(btn_none)
+        main_dock_layout.addWidget(btn_container)
+        self.channel_dock.setWidget(dock_container)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.channel_dock)
+
+        self.resizeDocks([self.channel_dock], [100], Qt.Orientation.Horizontal)
+        self.apply_appearance()
+
+    def filter_channel_list(self, text):
+        text = text.lower()
+        for i in range(self.channel_list.count()):
+            item = self.channel_list.item(i)
+            item.setHidden(text not in item.text().lower())
+
+    def apply_appearance(self):
+        if self.experimental_appearance:
+            self._apply_experimental_styles()
+        else:
+            self._apply_default_styles()
+
+    def _apply_default_styles(self):
+        self.setStyleSheet("")
+        
+        title_bar = self.channel_dock.titleBarWidget()
+        if title_bar:
+            title_bar.setStyleSheet("background-color: #333333; border-bottom: 1px solid #444444;")
+            lbl = title_bar.findChild(QLabel)
+            if lbl:
+                lbl.setStyleSheet("font-size: 11px; font-weight: bold; color: #ffffff;")
+            btn = title_bar.findChild(QPushButton)
+            if btn:
+                btn.setStyleSheet("""
+                    QPushButton { 
+                        border: none; 
+                        background: transparent; 
+                        font-size: 12px; 
+                        color: #ffffff; 
+                        margin: 0; 
+                        padding: 0;
+                    } 
+                    QPushButton:hover { 
+                        color: #cccccc;
+                    }
+                """)
+
+        dock_container = self.channel_dock.widget()
+        if dock_container:
+            dock_container.setStyleSheet("background-color: #333333;")
+
+        self.channel_search.setStyleSheet("""
+            QLineEdit {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 5px 8px;
+                font-size: 11px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #0078d4;
+            }
+            QLineEdit::placeholder {
+                color: #888888;
+            }
+        """)
+
         self.channel_list.setStyleSheet("""
             QListWidget {
                 border: none;
@@ -343,13 +616,6 @@ class MainWindow(QMainWindow):
                 background: none;
             }
         """)
-        self.channel_list.itemChanged.connect(self.on_channel_selection_changed)
-        main_dock_layout.addWidget(self.channel_list)
-
-        btn_container = QWidget()
-        btn_layout = QHBoxLayout(btn_container)
-        btn_layout.setContentsMargins(0, 4, 0, 0)
-        btn_layout.setSpacing(4)
 
         btn_style = """
             QPushButton {
@@ -367,23 +633,300 @@ class MainWindow(QMainWindow):
                 background-color: #222222;
             }
         """
+        for btn in self.channel_dock.widget().findChildren(QPushButton):
+            if btn.objectName() not in ["channelDockCollapseBtn"]:
+                btn.setStyleSheet(btn_style)
 
-        btn_all = QPushButton("All")
-        btn_all.setStyleSheet(btn_style)
-        btn_all.clicked.connect(self.select_all_channels)
+        self.btn_expand_sidebar.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(220, 220, 220, 0.5);
+                border: 1px solid #ccc;
+                border-left: none;
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+                color: #555;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                color: #555;
+                background-color: rgba(220, 220, 220, 0.7);
+            }
+        """)
 
-        btn_none = QPushButton("None")
-        btn_none.setStyleSheet(btn_style)
-        btn_none.clicked.connect(self.clear_all_channels)
+        if hasattr(self, 'toolbar'):
+            for btn in self.toolbar.findChildren(QPushButton):
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f0f0f0;
+                        color: #333333;
+                        border: 1px solid #cccccc;
+                        border-radius: 4px;
+                        padding: 4px 8px;
+                        font-size: 11px;
+                    }
+                    QPushButton:hover {
+                        background-color: #e0e0e0;
+                    }
+                    QPushButton:pressed {
+                        background-color: #d0d0d0;
+                    }
+                """)
 
-        btn_layout.addWidget(btn_all)
-        btn_layout.addWidget(btn_none)
-        main_dock_layout.addWidget(btn_container)
-        self.channel_dock.setWidget(dock_container)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.channel_dock)
+    def _apply_experimental_styles(self):
+        # EXPERIMENTAL: NEON CYBERPUNK CHAOS MODE
+        self.setStyleSheet("""
+            QMainWindow {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+            }
+            QMenuBar {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+                color: #000000;
+                border-bottom: 3px solid #ff00ff;
+                padding: 4px;
+                font-weight: bold;
+            }
+            QMenuBar::item:selected {
+                background: #ffff00;
+                color: #ff00ff;
+                border-radius: 4px;
+            }
+            QMenu {
+                background-color: #0a0a1a;
+                color: #00ff00;
+                border: 2px solid #ff00ff;
+                font-family: monospace;
+            }
+            QMenu::item:selected {
+                background: #ff00ff;
+                color: #000000;
+            }
+            QToolBar {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #1a0033, stop:0.5 #330066, stop:1 #003366);
+                border-bottom: 3px solid #00ffff;
+                padding: 6px;
+                spacing: 8px;
+            }
+            QToolBar QComboBox, QToolBar QSpinBox, QToolBar QCheckBox {
+                color: #ffff00;
+                font-weight: bold;
+            }
+            QSplitter::handle {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+                height: 4px;
+            }
+            QScrollBar:horizontal {
+                border: 2px solid #ff00ff;
+                background: #0a0a1a;
+                height: 16px;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff00ff, stop:1 #00ffff);
+                min-width: 50px;
+                border-radius: 8px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:1 #ff00ff);
+            }
+        """)
 
-        # Ensure the dock starts at its minimum width
-        self.resizeDocks([self.channel_dock], [80], Qt.Orientation.Horizontal)
+        title_bar = self.channel_dock.titleBarWidget()
+        if title_bar:
+            title_bar.setStyleSheet("""
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff0000, stop:0.33 #00ff00, stop:0.66 #0000ff, stop:1 #ff00ff);
+                border-bottom: 3px solid #ffff00;
+            """)
+            lbl = title_bar.findChild(QLabel)
+            if lbl:
+                lbl.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff; letter-spacing: 3px; text-transform: uppercase; font-family: monospace;")
+            btn = title_bar.findChild(QPushButton)
+            if btn:
+                btn.setStyleSheet("""
+                    QPushButton { 
+                        border: 2px solid #ffff00; 
+                        background: #ff00ff; 
+                        font-size: 14px; 
+                        color: #000000; 
+                        border-radius: 10px;
+                        margin: 2px; 
+                        padding: 2px;
+                        font-weight: bold;
+                    } 
+                    QPushButton:hover { 
+                        background: #00ffff;
+                        border: 2px solid #ff0000;
+                    }
+                """)
+
+        dock_container = self.channel_dock.widget()
+        if dock_container:
+            dock_container.setStyleSheet("""
+                background: qconicalgradient(cx:0.5, cy:0.5, angle:45, stop:0 #1a0033, stop:0.25 #003366, stop:0.5 #006600, stop:0.75 #660066, stop:1 #1a0033);
+                border-right: 3px solid #00ffff;
+            """)
+
+        self.channel_search.setStyleSheet("""
+            QLineEdit {
+                background-color: #0a0a1a;
+                color: #00ff00;
+                border: 2px solid #ff00ff;
+                border-radius: 12px;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-family: monospace;
+                font-weight: bold;
+            }
+            QLineEdit:focus {
+                border: 2px solid #00ffff;
+                background-color: #1a0033;
+                color: #ffff00;
+            }
+            QLineEdit::placeholder {
+                color: #ff00ff;
+                font-style: italic;
+            }
+        """)
+
+        self.channel_list.setStyleSheet("""
+            QListWidget {
+                border: none;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 rgba(10,10,26,0.9), stop:1 rgba(26,0,51,0.9));
+                outline: none;
+                font-size: 12px;
+                font-family: monospace;
+            }
+            QListWidget::item {
+                padding: 10px 12px;
+                border: none;
+                border-bottom: 2px solid rgba(255, 0, 255, 0.3);
+                color: #00ffff;
+                border-radius: 6px;
+                margin: 2px 4px;
+                font-weight: bold;
+            }
+            QListWidget::item:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(255,0,255,0.4), stop:1 rgba(0,255,255,0.4));
+                color: #ffff00;
+            }
+            QListWidget::item:selected {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                color: #000000;
+                border: 2px solid #ffff00;
+            }
+            QListWidget::indicator {
+                width: 20px;
+                height: 20px;
+                border-radius: 10px;
+                border: 3px solid #ff00ff;
+                background-color: #0a0a1a;
+            }
+            QListWidget::indicator:unchecked:hover {
+                border: 3px solid #00ffff;
+                background: #1a0033;
+            }
+            QListWidget::indicator:checked {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+                border: 3px solid #ffff00;
+            }
+            QScrollBar:vertical {
+                border: 2px solid #ff00ff;
+                background: #0a0a1a;
+                width: 12px;
+                margin: 0px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+                min-height: 20px;
+                border-radius: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+            }
+        """)
+
+        for btn in self.channel_dock.widget().findChildren(QPushButton):
+            if btn.objectName() == "channelBtnAll" or btn.objectName() == "channelBtnNone":
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ff0000, stop:0.5 #00ff00, stop:1 #0000ff);
+                        color: #ffffff;
+                        border: 2px solid #ffff00;
+                        border-radius: 10px;
+                        padding: 8px 14px;
+                        font-size: 12px;
+                        font-weight: bold;
+                        font-family: monospace;
+                    }
+                    QPushButton:hover {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+                        border: 2px solid #ffffff;
+                    }
+                    QPushButton:pressed {
+                        background: #ff00ff;
+                        border: 2px solid #000000;
+                    }
+                """)
+            elif btn.objectName() not in ["channelDockCollapseBtn"]:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #1a0033;
+                        color: #00ffff;
+                        border: 2px solid #ff00ff;
+                        border-radius: 6px;
+                        padding: 6px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #ff00ff;
+                        color: #000000;
+                    }
+                """)
+
+        # Style toolbar buttons - NEON CHAOS
+        if hasattr(self, 'toolbar'):
+            for btn in self.toolbar.findChildren(QPushButton):
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                        color: #000000;
+                        border: 2px solid #ffff00;
+                        border-radius: 8px;
+                        padding: 6px 12px;
+                        font-size: 11px;
+                        font-weight: bold;
+                        font-family: monospace;
+                    }
+                    QPushButton:hover {
+                        background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffff00, stop:1 #ff00ff);
+                        border: 2px solid #ffffff;
+                    }
+                    QPushButton:pressed {
+                        background: #00ff00;
+                        border: 2px solid #ff0000;
+                    }
+                """)
+
+        # Style expand sidebar button
+        self.btn_expand_sidebar.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ff00ff, stop:0.5 #00ffff, stop:1 #ffff00);
+                border: 2px solid #ff00ff;
+                border-left: none;
+                border-top-right-radius: 10px;
+                border-bottom-right-radius: 10px;
+                color: #000000;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #ffff00, stop:0.5 #ff00ff, stop:1 #00ffff);
+                border: 2px solid #00ffff;
+            }
+        """)
 
     def populate_channel_list(self, names):
         self.channel_list.blockSignals(True)
@@ -452,6 +995,13 @@ class MainWindow(QMainWindow):
         export_action = QAction("&Export Annotations CSV", self)
         export_action.triggered.connect(lambda: self.annotation_manager.export_annotations(self))
         file_menu.addAction(export_action)
+
+        file_menu.addSeparator()
+
+        close_action = QAction("&Close", self)
+        close_action.setShortcut("Cmd+W")
+        close_action.triggered.connect(self.close_file)
+        file_menu.addAction(close_action)
         
         view_menu = menubar.addMenu("&View")
         self.extract_action = QAction("Enable &Feature Extraction", self)
@@ -520,6 +1070,14 @@ class MainWindow(QMainWindow):
         auto_load_action.setChecked(self.auto_load_labels)
         auto_load_action.triggered.connect(self.toggle_auto_load_labels)
         settings_menu.addAction(auto_load_action)
+
+        settings_menu.addSeparator()
+
+        self.experimental_action = QAction("Experimental Appearance", self)
+        self.experimental_action.setCheckable(True)
+        self.experimental_action.setChecked(self.experimental_appearance)
+        self.experimental_action.triggered.connect(self.toggle_experimental_appearance)
+        settings_menu.addAction(self.experimental_action)
         
         self.update_recent_menus()
 
@@ -528,6 +1086,13 @@ class MainWindow(QMainWindow):
 
     def toggle_auto_load_labels(self, checked):
         self.auto_load_labels = checked
+
+    def toggle_experimental_appearance(self, checked):
+        self.experimental_appearance = checked
+        self.experimental_action.setChecked(checked)
+        self.time_series_plot.set_experimental_mode(checked)
+        self.extract_panel.set_experimental_mode(checked)
+        self.apply_appearance()
 
     def load_dummy_data(self):
         """Generates and loads dummy EEG data and labels for testing."""
@@ -574,62 +1139,9 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to generate dummy data: {e}")
 
-    def _load_edf_internal(self, filepath, record_recent=True):
-        print(f"MainWindow: Internal Loading {filepath}")
-        
-        # Hide navigator since this is a single file load
-        self.btn_folder_nav.setEnabled(False)
-        self.btn_folder_nav.setVisible(False)
-
-        if self.data_model.load_edf(filepath):
-            if record_recent:
-                self.update_recents(file_path=filepath)
-            
-            self.annotation_manager.clear_annotations()
-            
-            # Check for label file: <original_name>_labels.json
-            if self.auto_load_labels:
-                base_path, _ = os.path.splitext(filepath)
-                label_path = base_path + "_labels.json"
-                if os.path.exists(label_path):
-                    print(f"MainWindow: Found label file {label_path}")
-                    self.annotation_manager.load_labels_from_json(label_path)
-
-            self.setWindowTitle(f"EEGAnalyser - {filepath} (DUMMY)" if not record_recent else f"EEGAnalyser - {filepath}")
-            
-            # Set a default target channel for extraction if none selected
-            if not self.extract_target_ch and self.data_model.channel_names:
-                self.extract_target_ch = self.data_model.channel_names[0]
-
-            self.time_series_plot.plot_data(self.data_model)
-            if self.extract_action.isChecked():
-                self.time_series_plot.set_locked_view(self.extract_window * 4, self.extract_window)
-                self.update_spectral_view()
-            self.update()
-        else:
-            QMessageBox.critical(self, "Error", f"Failed to load EDF file: {filepath}")
-
     def setup_tool_bar(self):
         self.toolbar = QToolBar("Controls")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.toolbar)
-
-        # Sidebar Toggle Button (Farthest Left)
-        self.btn_toggle_channels = QPushButton("◀ Chs")
-        self.btn_toggle_channels.setCheckable(True)
-        self.btn_toggle_channels.setChecked(True)
-        self.btn_toggle_channels.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_toggle_channels.setToolTip("Toggle Chs Sidebar")
-        self.btn_toggle_channels.clicked.connect(lambda checked: self.channel_dock.setVisible(checked))
-
-        # Ensure no hover color change for toolbar button if that was a concern
-        self.btn_toggle_channels.setStyleSheet("QPushButton:hover { color: inherit; }")
-
-        def update_sidebar_btn(visible):
-            self.btn_toggle_channels.setChecked(visible)
-            self.btn_toggle_channels.setText("◀ Chs" if visible else "▶ Chs")
-            self.btn_expand_sidebar.setVisible(not visible)
-        self.channel_dock.visibilityChanged.connect(update_sidebar_btn)
-        self.toolbar.addWidget(self.btn_toggle_channels)
 
         self.toolbar.addSeparator()
 
@@ -793,20 +1305,33 @@ class MainWindow(QMainWindow):
         self.apply_resolution_settings(is_auto, self.manual_res_factor)
 
     def open_extract_settings(self):
-        dialog = FeatureSettingsDialog(self, channels=self.data_model.channel_names)
-        dialog.set_values(self.extract_mode, self.extract_window, self.extract_target_ch, self.extract_nperseg, self.extract_noverlap, band=self.extract_band)
+        sfreq = self.data_model.sfreq if self.data_model.raw else None
+        duration = self.data_model.raw.times[-1] if self.data_model.raw is not None and hasattr(self.data_model.raw, 'times') and self.data_model.raw.times is not None else None
+        n_channels = len(self.data_model.channel_names) if self.data_model.channel_names else None
+        dialog = FeatureSettingsDialog(self, channels=self.data_model.channel_names,
+                                       sfreq=sfreq, duration=duration, n_channels=n_channels)
+        dialog.set_values(self.extract_mode, self.extract_window, self.extract_target_ch, 
+                         self.extract_nperseg, self.extract_noverlap, 
+                         band=self.extract_band, 
+                         window_func=self.extract_window_func, 
+                         scaling=self.extract_scaling,
+                         interp=self.extract_interp)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             vals = dialog.get_values()
             self.extract_mode = vals["mode"]
             self.extract_band = vals["band"]
+            self.extract_interp = vals["interp"]
             self.extract_window = vals["window"]
             self.extract_target_ch = vals["target_ch"]
             self.extract_nperseg = vals["nperseg"]
             self.extract_noverlap = vals["noverlap"]
+            self.extract_window_func = vals["window_func"]
+            self.extract_scaling = vals["scaling"]
             self.extract_panel.set_mode(self.extract_mode)
             if self.extract_action.isChecked():
                 self.time_series_plot.set_locked_view(self.extract_window * 4, self.extract_window)
                 self.update_spectral_view()
+            self.save_recents()
 
     def open_notch_filter(self):
         if not self.data_model.raw: return
@@ -886,6 +1411,7 @@ class MainWindow(QMainWindow):
             if not self.extract_target_ch and self.data_model.channel_names:
                 self.extract_target_ch = self.data_model.channel_names[0]
 
+            self.extract_panel.set_data_loaded(True)
             self.time_series_plot.plot_data(self.data_model)
             if self.extract_action.isChecked():
                 self.time_series_plot.set_locked_view(self.extract_window * 4, self.extract_window)
@@ -893,6 +1419,26 @@ class MainWindow(QMainWindow):
             self.update()
         else:
             QMessageBox.critical(self, "Error", f"Failed to load EDF file: {filepath}")
+
+    def close_file(self):
+        self.data_model = EEGDataModel()
+        self.current_folder = ""
+        self.btn_folder_nav.setEnabled(False)
+        self.btn_folder_nav.setVisible(False)
+        self.annotation_manager.clear_annotations()
+        self.time_series_plot.clear_curves()
+        self.time_series_plot.data_loaded = False
+        self.time_series_plot.stack.setCurrentWidget(self.time_series_plot.placeholder_widget)
+        self.time_series_plot.raw_data = None
+        self.time_series_plot.times = None
+        self.time_series_plot.total_duration = 0
+        self.extract_panel.set_data_loaded(False)
+        self.extract_panel.setVisible(False)
+        self.extract_action.setChecked(False)
+        self.main_splitter.setSizes([0, 800])
+        self.channel_list.clear()
+        self.setWindowTitle("EEGAnalyser")
+        self.time_series_plot.update()
 
     def open_folder_dialog(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Folder")
@@ -994,11 +1540,17 @@ class MainWindow(QMainWindow):
             if self.extract_mode != "topomap" and data is not None and data.shape[0] > 1 and self.extract_target_ch and isinstance(self.extract_target_ch, list) and len(self.extract_target_ch) > 1:
                 import numpy as np
                 data = np.mean(data, axis=0, keepdims=True)
+                current_ch_names = ["Average"]
+            else:
+                current_ch_names = self.data_model.channel_names if picks is None else [self.data_model.channel_names[i] for i in picks]
 
             self.extract_panel.update_features(data, sfreq, self.extract_window, self.extract_mode, 
                                              nperseg_override=self.extract_nperseg, 
                                              noverlap_override=self.extract_noverlap,
                                              band_str=self.extract_band,
-                                             ch_names=self.data_model.channel_names if picks is None else [self.data_model.channel_names[i] for i in picks])
+                                             ch_names=current_ch_names,
+                                             window_func=self.extract_window_func,
+                                             scaling=self.extract_scaling,
+                                             interp=self.extract_interp)
         except Exception as e:
             print(f"Error updating extract view: {e}")

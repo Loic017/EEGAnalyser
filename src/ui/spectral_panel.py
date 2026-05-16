@@ -1,4 +1,5 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QStackedWidget, QLabel
+from PyQt6.QtCore import Qt
 import pyqtgraph as pg
 import scipy.signal
 import scipy.interpolate
@@ -14,6 +15,19 @@ class SpectralViewWidget(QWidget):
         
         self.stack = QStackedWidget()
         self.layout.addWidget(self.stack)
+        
+        self.is_experimental = False
+        self.data_loaded = False
+        
+        # --- Placeholder Widget ---
+        self.placeholder_widget = QWidget()
+        placeholder_layout = QVBoxLayout(self.placeholder_widget)
+        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        placeholder_label = QLabel("Load data to view features")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #666;")
+        placeholder_layout.addWidget(placeholder_label)
         
         # --- PSD View ---
         self.psd_widget = pg.GraphicsLayoutWidget()
@@ -66,14 +80,26 @@ class SpectralViewWidget(QWidget):
             self.topo_plots.append(tp)
             self.topo_images.append(timg)
             
+        self.stack.addWidget(self.placeholder_widget)
         self.stack.addWidget(self.psd_widget)
         self.stack.addWidget(self.spec_widget)
         self.stack.addWidget(self.topo_widget)
         
         self.current_mode = 'psd'
         self.set_mode('psd')
+        self.set_data_loaded(False)
+
+    def set_data_loaded(self, loaded: bool):
+        self.data_loaded = loaded
+        if loaded:
+            self.set_mode(self.current_mode)
+        else:
+            self.stack.setCurrentWidget(self.placeholder_widget)
 
     def set_mode(self, mode: str):
+        if not self.data_loaded:
+            self.stack.setCurrentWidget(self.placeholder_widget)
+            return
         self.current_mode = mode.lower()
         if self.current_mode == 'psd':
             self.stack.setCurrentWidget(self.psd_widget)
@@ -81,6 +107,46 @@ class SpectralViewWidget(QWidget):
             self.stack.setCurrentWidget(self.spec_widget)
         elif self.current_mode == 'topomap':
             self.stack.setCurrentWidget(self.topo_widget)
+
+    def set_experimental_mode(self, enabled: bool):
+        self.is_experimental = enabled
+        bg = '#0a0a1a' if enabled else 'w'
+        
+        for widget in [self.psd_widget, self.spec_widget, self.topo_widget]:
+            widget.setBackground(bg)
+        
+        if enabled:
+            self.placeholder_widget.setStyleSheet("""
+                QWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+                }
+                QLabel {
+                    color: #00ffff;
+                    font-family: monospace;
+                    font-weight: bold;
+                    font-size: 20px;
+                }
+            """)
+        else:
+            self.placeholder_widget.setStyleSheet("")
+            
+        plots = [p for p, _ in self.psd_plots] + self.spec_plots + self.topo_plots
+        for plot in plots:
+            if enabled:
+                plot.getAxis('bottom').setPen(pg.mkPen('#ff00ff', width=2))
+                plot.getAxis('left').setPen(pg.mkPen('#00ffff', width=2))
+                plot.getAxis('bottom').setTextPen('#ffff00')
+                plot.getAxis('left').setTextPen('#00ff00')
+                plot.showGrid(x=True, y=True, alpha=30)
+            else:
+                plot.getAxis('bottom').setPen(pg.mkPen('k', width=1))
+                plot.getAxis('left').setPen(pg.mkPen('k', width=1))
+                plot.getAxis('bottom').setTextPen('k')
+                plot.getAxis('left').setTextPen('k')
+                plot.showGrid(x=True, y=True, alpha=128)
+                
+        for _, curve in self.psd_plots:
+            curve.setPen(pg.mkPen(color='#00ffff' if enabled else 'b', width=2 if enabled else 1.5))
 
     def _clear_plot(self, idx: int, mode: str):
         if mode == 'psd':
@@ -95,7 +161,9 @@ class SpectralViewWidget(QWidget):
 
     def update_features(self, data: np.ndarray, sfreq: float, window_size_sec: float, mode: str, 
                         nperseg_override: int = 0, noverlap_override: int = 0, 
-                        band_str: str = "Alpha (8-12 Hz)", ch_names: list = []):
+                        band_str: str = "Alpha (8-12 Hz)", ch_names: list = [],
+                        window_func: str = "hann", scaling: str = "density",
+                        interp: str = "cubic"):
         if not self.isVisible() or data.size == 0 or sfreq == 0:
             return
             
@@ -141,11 +209,14 @@ class SpectralViewWidget(QWidget):
                     chunk_to_use = chunk[0]
                     nperseg = nperseg_override if nperseg_override > 0 else min(int(window_size_sec * sfreq), chunk_to_use.shape[0])
                     nperseg = min(nperseg, chunk_to_use.shape[0])
+                    noverlap = noverlap_override if noverlap_override > 0 else nperseg // 2
+                    noverlap = min(noverlap, nperseg - 1)
+
                     if nperseg < 2:
                         self._clear_plot(i, mode)
                         continue
                         
-                    freqs, psd = scipy.signal.welch(chunk_to_use, fs=sfreq, nperseg=nperseg)
+                    freqs, psd = scipy.signal.welch(chunk_to_use, fs=sfreq, nperseg=nperseg, noverlap=noverlap, window=window_func, scaling=scaling)
                     if freqs.size > 1 and psd.size > 1:
                         psd_db = np.nan_to_num(10 * np.log10(psd + 1e-20), posinf=0.0, neginf=0.0)
                         if self.psd_plots[i][0].vb.width() > 0 and self.psd_plots[i][0].vb.height() > 0:
@@ -167,7 +238,7 @@ class SpectralViewWidget(QWidget):
                         self._clear_plot(i, mode)
                         continue
                         
-                    f, t, Sxx = scipy.signal.spectrogram(chunk_to_use, fs=sfreq, nperseg=nperseg, noverlap=noverlap)
+                    f, t, Sxx = scipy.signal.spectrogram(chunk_to_use, fs=sfreq, nperseg=nperseg, noverlap=noverlap, window=window_func, scaling=scaling)
                     if Sxx.size == 0:
                         self._clear_plot(i, mode)
                         continue
@@ -185,7 +256,10 @@ class SpectralViewWidget(QWidget):
                 elif mode == 'topomap':
                     # Calculate band power for all channels
                     nperseg = nperseg_override if nperseg_override > 0 else min(int(sfreq), chunk.shape[1])
-                    f, psd = scipy.signal.welch(chunk, fs=sfreq, nperseg=nperseg, axis=1)
+                    noverlap = noverlap_override if noverlap_override > 0 else nperseg // 2
+                    noverlap = min(noverlap, nperseg - 1)
+
+                    f, psd = scipy.signal.welch(chunk, fs=sfreq, nperseg=nperseg, noverlap=noverlap, axis=1, window=window_func, scaling=scaling)
                     
                     idx_band = np.logical_and(f >= band_range[0], f <= band_range[1])
                     if not np.any(idx_band):
@@ -197,22 +271,22 @@ class SpectralViewWidget(QWidget):
                     band_power_db = 10 * np.log10(band_power + 1e-20)
                     
                     # Interpolate
-                    grid_x, grid_y = np.mgrid[-0.6:0.6:100j, -0.6:0.6:100j]
+                    grid_x, grid_y = np.mgrid[-1:1:200j, -1:1:200j]
                     # Project 3D pos to 2D
                     points = pos[:, :2]
                     values = band_power_db
                     
                     # RBF or GridData interpolation
-                    zi = scipy.interpolate.griddata(points, values, (grid_x, grid_y), method='cubic')
+                    zi = scipy.interpolate.griddata(points, values, (grid_x, grid_y), method=interp)
                     
                     # Mask to circle
-                    mask = np.sqrt(grid_x**2 + grid_y**2) > 0.5
+                    mask = np.sqrt(grid_x**2 + grid_y**2) > 0.85
                     zi[mask] = np.nan
                     
                     if self.topo_plots[i].vb.width() > 0:
                         # pyqtgraph ImageItem expects (width, height)
                         self.topo_images[i].setImage(zi, autoLevels=True)
-                        self.topo_images[i].setRect(pg.QtCore.QRectF(-0.6, -0.6, 1.2, 1.2))
+                        self.topo_images[i].setRect(pg.QtCore.QRectF(-1, -1, 2, 2))
                         self.topo_plots[i].autoRange()
                     else:
                         self._clear_plot(i, mode)

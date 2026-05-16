@@ -1,12 +1,17 @@
 import pyqtgraph as pg
 import numpy as np
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollBar
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QScrollBar, QStackedWidget, QPushButton, QHBoxLayout, QLabel, QMenu
+from PyQt6.QtCore import Qt, pyqtSignal, QEvent
 from src.data.eeg_model import EEGDataModel
 
 class TimeSeriesPlot(QWidget):
     channels_loaded = pyqtSignal(list)
     effective_downsample_changed = pyqtSignal(int)
+    load_file_clicked = pyqtSignal()
+    load_folder_clicked = pyqtSignal()
+    load_dummy_clicked = pyqtSignal()
+    load_recent_file_clicked = pyqtSignal(str)
+    load_recent_folder_clicked = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -30,20 +35,182 @@ class TimeSeriesPlot(QWidget):
         self.locked_duration = None
         self.scroll_step = None
         
+        self.is_experimental = False
+        self.data_loaded = False
+        
+        # Stacked widget to switch between placeholder and graph
+        self.stack = QStackedWidget()
+        self.layout().addWidget(self.stack)
+        
+        # --- Placeholder Widget with Load Buttons ---
+        self.placeholder_widget = QWidget()
+        placeholder_layout = QVBoxLayout(self.placeholder_widget)
+        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        placeholder_label = QLabel("No data loaded")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #666;")
+        placeholder_layout.addWidget(placeholder_label)
+        
+        btn_layout = QHBoxLayout()
+        
+        self.btn_load_file = QPushButton("Load EDF File")
+        self.btn_load_file.setStyleSheet("""
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #106ebe;
+            }
+            QPushButton:pressed {
+                background-color: #005a9e;
+            }
+        """)
+        self.btn_load_file.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_file.clicked.connect(self.load_file_clicked.emit)
+        
+        self.btn_load_folder = QPushButton("Load Folder")
+        self.btn_load_folder.setStyleSheet("""
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #106ebe;
+            }
+            QPushButton:pressed {
+                background-color: #005a9e;
+            }
+        """)
+        self.btn_load_folder.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_folder.clicked.connect(self.load_folder_clicked.emit)
+        
+        self.btn_load_dummy = QPushButton("Load Dummy Data")
+        self.btn_load_dummy.setStyleSheet("""
+            QPushButton {
+                background-color: #666;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #555;
+            }
+            QPushButton:pressed {
+                background-color: #444;
+            }
+        """)
+        self.btn_load_dummy.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_load_dummy.clicked.connect(self.load_dummy_clicked.emit)
+        
+        btn_layout.addWidget(self.btn_load_file)
+        btn_layout.addWidget(self.btn_load_folder)
+        btn_layout.addWidget(self.btn_load_dummy)
+        placeholder_layout.addLayout(btn_layout)
+        
+        # Separator line
+        separator = QWidget()
+        separator.setFixedHeight(1)
+        separator.setStyleSheet("background-color: #ddd;")
+        placeholder_layout.addSpacing(12)
+        placeholder_layout.addWidget(separator)
+        placeholder_layout.addSpacing(8)
+        
+        # Recent label
+        recent_label = QLabel("Recent")
+        recent_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        recent_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #999; text-transform: uppercase; letter-spacing: 1px;")
+        placeholder_layout.addWidget(recent_label)
+        placeholder_layout.addSpacing(4)
+        
+        # Recent files dropdown
+        self.btn_recent_files = QPushButton("Recent Files ▼")
+        self.btn_recent_files.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #0078d4;
+                border: 1px solid #0078d4;
+                border-radius: 4px;
+                padding: 5px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #0078d4;
+                color: white;
+            }
+            QPushButton:pressed {
+                background-color: #005a9e;
+            }
+        """)
+        self.btn_recent_files.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_recent_files.setVisible(False)
+        self.recent_files_menu = QMenu(self.btn_recent_files)
+        self.btn_recent_files.setMenu(self.recent_files_menu)
+        placeholder_layout.addWidget(self.btn_recent_files, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # Recent folders dropdown
+        self.btn_recent_folders = QPushButton("Recent Folders ▼")
+        self.btn_recent_folders.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #0078d4;
+                border: 1px solid #0078d4;
+                border-radius: 4px;
+                padding: 5px 14px;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #0078d4;
+                color: white;
+            }
+            QPushButton:pressed {
+                background-color: #005a9e;
+            }
+        """)
+        self.btn_recent_folders.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_recent_folders.setVisible(False)
+        self.recent_folders_menu = QMenu(self.btn_recent_folders)
+        self.btn_recent_folders.setMenu(self.recent_folders_menu)
+        placeholder_layout.addWidget(self.btn_recent_folders, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        # --- Graph Widget ---
+        self.graph_widget = QWidget()
+        graph_layout = QVBoxLayout(self.graph_widget)
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+        graph_layout.setSpacing(0)
+        
         self.graphics_layout = pg.GraphicsLayoutWidget()
         self.graphics_layout.setBackground('w')
-        self.layout().addWidget(self.graphics_layout)
+        graph_layout.addWidget(self.graphics_layout)
         
         self.plot_item = self.graphics_layout.addPlot()
         self.plot_item.setLabel('bottom', 'Time', units='s')
         self.plot_item.setLabel('left', 'Chs')
         self.plot_item.showGrid(x=True, y=True)
+        self.plot_item.enableAutoRange(x=False, y=False)
         
-        self.plot_item.setMouseEnabled(x=False, y=False)
-        self.plot_item.setMenuEnabled(False)
+        vb = self.plot_item.getViewBox()
+        vb.setMouseEnabled(x=False, y=False)
+        vb.enableAutoRange(x=False, y=False)
+        vb.setDefaultPadding(0)
+        self.graphics_layout.viewport().installEventFilter(self)
         
-        self.curves = []
-        self.window_lines = []
         self.scrollbar = QScrollBar(Qt.Orientation.Horizontal)
         self.scrollbar.setStyleSheet("""
             QScrollBar:horizontal {
@@ -67,7 +234,14 @@ class TimeSeriesPlot(QWidget):
                 background: none;
             }
         """)
-        self.layout().addWidget(self.scrollbar)
+        graph_layout.addWidget(self.scrollbar)
+        
+        self.stack.addWidget(self.placeholder_widget)
+        self.stack.addWidget(self.graph_widget)
+        self.stack.setCurrentWidget(self.placeholder_widget)
+        
+        self.curves = []
+        self.window_lines = []
         
         self.scrollbar.valueChanged.connect(self.on_scrollbar_changed)
         
@@ -75,7 +249,7 @@ class TimeSeriesPlot(QWidget):
         self.plot_item.sigXRangeChanged.connect(self.on_x_range_changed)
         
         self._scrollbar_blocking = False
-
+        
     def set_locked_view(self, duration: float, step: float):
         self.locked_duration = duration
         self.scroll_step = step
@@ -92,6 +266,129 @@ class TimeSeriesPlot(QWidget):
         self.scroll_step = None
         self._update_scrollbar()
         self._clear_window_lines()
+
+    def set_experimental_mode(self, enabled: bool):
+        self.is_experimental = enabled
+        if enabled:
+            self.graphics_layout.setBackground('#0a0a1a')
+            self.plot_item.getAxis('bottom').setPen(pg.mkPen('#ff00ff', width=2))
+            self.plot_item.getAxis('left').setPen(pg.mkPen('#00ffff', width=2))
+            self.plot_item.getAxis('bottom').setTextPen('#ffff00')
+            self.plot_item.getAxis('left').setTextPen('#00ff00')
+            self.plot_item.showGrid(x=True, y=True, alpha=30)
+            if hasattr(self, 'curves'):
+                for curve, _, _ in self.curves:
+                    curve.setPen(pg.mkPen(color='#00ffff', width=2))
+            self.placeholder_widget.setStyleSheet("""
+                QWidget {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #0a0a0a, stop:0.5 #1a0a2e, stop:1 #0a1a2e);
+                }
+                QLabel {
+                    color: #00ffff;
+                    font-family: monospace;
+                    font-weight: bold;
+                    font-size: 20px;
+                }
+                QPushButton {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                    color: #000000;
+                    border: 2px solid #ffff00;
+                    border-radius: 8px;
+                    padding: 10px 20px;
+                    font-size: 14px;
+                    font-weight: bold;
+                    font-family: monospace;
+                }
+                QPushButton:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffff00, stop:1 #ff00ff);
+                    border: 2px solid #ffffff;
+                }
+                QPushButton:pressed {
+                    background: #00ff00;
+                    border: 2px solid #ff0000;
+                }
+            """)
+            self.btn_recent_files.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #00ffff;
+                    border: 1px solid #ff00ff;
+                    border-radius: 4px;
+                    padding: 5px 14px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    font-family: monospace;
+                }
+                QPushButton:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                    color: #000000;
+                    border: 1px solid #ffff00;
+                }
+            """)
+            self.btn_recent_folders.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #00ffff;
+                    border: 1px solid #ff00ff;
+                    border-radius: 4px;
+                    padding: 5px 14px;
+                    font-size: 11px;
+                    font-weight: bold;
+                    font-family: monospace;
+                }
+                QPushButton:hover {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff00ff, stop:1 #00ffff);
+                    color: #000000;
+                    border: 1px solid #ffff00;
+                }
+            """)
+        else:
+            self.graphics_layout.setBackground('w')
+            self.plot_item.getAxis('bottom').setPen(pg.mkPen('k', width=1))
+            self.plot_item.getAxis('left').setPen(pg.mkPen('k', width=1))
+            self.plot_item.getAxis('bottom').setTextPen('k')
+            self.plot_item.getAxis('left').setTextPen('k')
+            self.plot_item.showGrid(x=True, y=True, alpha=128)
+            if hasattr(self, 'curves'):
+                for curve, _, _ in self.curves:
+                    curve.setPen(pg.mkPen(color='k', width=1))
+            self.placeholder_widget.setStyleSheet("")
+            self.btn_recent_files.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #0078d4;
+                    border: 1px solid #0078d4;
+                    border-radius: 4px;
+                    padding: 5px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #0078d4;
+                    color: white;
+                }
+                QPushButton:pressed {
+                    background-color: #005a9e;
+                }
+            """)
+            self.btn_recent_folders.setStyleSheet("""
+                QPushButton {
+                    background-color: transparent;
+                    color: #0078d4;
+                    border: 1px solid #0078d4;
+                    border-radius: 4px;
+                    padding: 5px 14px;
+                    font-size: 11px;
+                    font-weight: 600;
+                }
+                QPushButton:hover {
+                    background-color: #0078d4;
+                    color: white;
+                }
+                QPushButton:pressed {
+                    background-color: #005a9e;
+                }
+            """)
 
     def _update_window_lines(self):
         if self.locked_duration is None or self.scroll_step is None:
@@ -116,25 +413,60 @@ class TimeSeriesPlot(QWidget):
         for line in self.window_lines:
             line.setVisible(False)
 
-    def wheelEvent(self, event):
-        """Overrides mouse wheel to zoom with a fixed start point or scroll if locked."""
-        delta = event.angleDelta().y()
-        
-        if self.locked_duration is not None:
-            # Scroll instead of zoom
-            step = int(self.scroll_step * 1000) if self.scroll_step else int(self.visible_duration * 100)
-            if delta > 0:
-                self.scrollbar.setValue(self.scrollbar.value() - step)
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel and obj is self.graphics_layout.viewport():
+            if self.total_duration <= 0:
+                return True
+
+            pixel_delta = event.pixelDelta()
+            angle_delta = event.angleDelta()
+
+            if not pixel_delta.isNull():
+                dx = pixel_delta.x()
+                dy = pixel_delta.y()
+
+                if abs(dx) > abs(dy):
+                    pixels_per_second = self.width() / self.visible_duration
+                    pan_seconds = dx / pixels_per_second
+                    new_start = self.current_x_range[0] + pan_seconds
+                else:
+                    pixels_per_second = self.width() / self.visible_duration
+                    pan_seconds = dy / pixels_per_second * 2
+                    new_start = self.current_x_range[0] + pan_seconds
+
+                new_start = max(0, min(new_start, self.total_duration - self.visible_duration))
+                self.scrollbar.setValue(int(new_start * 1000))
             else:
-                self.scrollbar.setValue(self.scrollbar.value() + step)
+                dy = angle_delta.y()
+                if dy != 0:
+                    pan_amount = self.visible_duration * 0.15
+                    if dy > 0:
+                        new_start = self.current_x_range[0] - pan_amount
+                    else:
+                        new_start = self.current_x_range[0] + pan_amount
+
+                    new_start = max(0, min(new_start, self.total_duration - self.visible_duration))
+                    self.scrollbar.setValue(int(new_start * 1000))
+
             event.accept()
+            return True
+
+        return super().eventFilter(obj, event)
+
+    def _apply_zoom(self, factor: float):
+        """Applies zoom centered on the current view."""
+        if self.total_duration <= 0 or self.locked_duration is not None:
             return
             
-        if delta > 0:
-            self.zoom_fixed_start(0.9)
-        else:
-            self.zoom_fixed_start(1.1)
-        event.accept()
+        center = (self.current_x_range[0] + self.current_x_range[1]) / 2
+        new_duration = self.visible_duration * factor
+        new_duration = max(0.1, min(new_duration, self.total_duration))
+        
+        start = max(0, center - new_duration / 2)
+        end = min(self.total_duration, start + new_duration)
+        start = max(0, end - new_duration)
+        
+        self.plot_item.setXRange(start, end, padding=0)
 
     def on_scrollbar_changed(self, value):
         if self._scrollbar_blocking:
@@ -150,6 +482,9 @@ class TimeSeriesPlot(QWidget):
                 end_time = self.total_duration
                 start_time = max(0, end_time - self.visible_duration)
         
+        start_time = max(0, min(start_time, self.total_duration))
+        end_time = max(start_time + 0.01, min(end_time, self.total_duration))
+        
         self.plot_item.setXRange(start_time, end_time, padding=0)
         self.current_x_range = (start_time, end_time)
         self.update_visible_data()
@@ -164,25 +499,31 @@ class TimeSeriesPlot(QWidget):
                 x_range = (x_range[0], end)
 
         self.current_x_range = x_range
-        self.visible_duration = x_range[1] - x_range[0]
+        self.visible_duration = max(0.1, x_range[1] - x_range[0])
         self._update_scrollbar()
         if self.locked_duration is not None:
             self._update_window_lines()
 
     def _update_scrollbar(self):
         self._scrollbar_blocking = True
-        scrollbar_value = int(self.current_x_range[0] * 1000)
-        page_step = int(self.visible_duration * 1000)
+        
+        safe_start = max(0.0, min(self.current_x_range[0], self.total_duration))
+        safe_duration = max(0.1, min(self.visible_duration, self.total_duration))
+        
+        scrollbar_value = int(min(safe_start * 1000, 2147483647))
+        page_step = int(min(safe_duration * 1000, 2147483647))
+        max_val = int(max(0, min((self.total_duration - safe_duration) * 1000, 2147483647)))
         
         if self.scroll_step and self.locked_duration is not None:
-            self.scrollbar.setSingleStep(int(self.scroll_step * 1000))
+            single_step = int(min(self.scroll_step * 1000, 2147483647))
         else:
-            self.scrollbar.setSingleStep(max(1, page_step // 10))
+            single_step = max(1, page_step // 10)
             
         self.scrollbar.blockSignals(True)
-        self.scrollbar.setMaximum(int(max(0, self.total_duration - self.visible_duration) * 1000))
+        self.scrollbar.setMaximum(max_val)
         self.scrollbar.setValue(scrollbar_value)
         self.scrollbar.setPageStep(page_step)
+        self.scrollbar.setSingleStep(single_step)
         self.scrollbar.blockSignals(False)
         
         self._scrollbar_blocking = False
@@ -211,6 +552,9 @@ class TimeSeriesPlot(QWidget):
         if self.raw_data is None:
             print("TimeSeriesPlot: No data found.")
             return
+
+        self.data_loaded = True
+        self.stack.setCurrentWidget(self.graph_widget)
 
         self.n_channels = self.raw_data.shape[0]
         self.total_duration = self.times[-1] if len(self.times) > 0 else 0
@@ -253,7 +597,7 @@ class TimeSeriesPlot(QWidget):
             self.plot_item.removeItem(curve)
         
         while len(self.curves) < n_vis:
-            curve = self.plot_item.plot(pen=pg.mkPen(color='k', width=1))
+            curve = self.plot_item.plot(pen=pg.mkPen(color='#00ffff' if self.is_experimental else 'k', width=2 if self.is_experimental else 1))
             self.curves.append([curve, 0, 0])
 
         yticks = []
@@ -267,6 +611,8 @@ class TimeSeriesPlot(QWidget):
             self.curves[i][2] = ch_idx
 
         self.plot_item.getAxis('left').setTicks([yticks])
+        if self.is_experimental:
+            self.plot_item.getAxis('left').setTextPen('#00ff00')
         
         y_min = -self.offset_step
         y_max = n_vis * self.offset_step
@@ -338,3 +684,6 @@ class TimeSeriesPlot(QWidget):
                     curve.setData(visible_times, channel_data + y_offset)
             else:
                 curve.setData(visible_times, channel_data + y_offset)
+        
+        n_vis = len(self.visible_channels_indices)
+        self.plot_item.setYRange(-self.offset_step, n_vis * self.offset_step, padding=0)
